@@ -1,16 +1,18 @@
 package main
 
 import (
+	"bufio"
 	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"path"
 
 	"github.com/adrg/xdg"
-	"github.com/pelletier/go-toml/v2"
 )
 
 /**
@@ -48,31 +50,68 @@ var version string
  * Main function.
  */
 func main() {
-	configFile := flag.String("config", path.Join(xdg.ConfigHome, "dotsync.toml"), "Config file location")
+	configFile := flag.String("config", path.Join(xdg.ConfigHome, "dotsync"), "Config file location")
 	flag.Parse()
 	fmt.Println("Version:", version)
-	readConfig(*configFile)
+	cfg := readConfig(*configFile)
+	executeDots(cfg)
 }
 
 /**
  * Reads the config file and handles the dotfiles.
  */
-func readConfig(configFile string) {
-	data, err := os.ReadFile(configFile)
+func readConfig(configFile string) Config {
+	file, err := os.Open(configFile)
 	if err != nil {
 		fmt.Println("Config file not found in", configFile)
 		os.Exit(1)
 	}
+	defer file.Close()
 
+	// Initialize cfg
 	var cfg Config
 
-	// Reading from a TOML file
-	err = toml.Unmarshal([]byte(data), &cfg)
-	if err != nil {
-		fmt.Println("Error reading TOML file:", err)
-		os.Exit(2)
+	inDots := false
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if len(line) == 0 || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if inDots {
+			// Read dot definitions.
+			fields := strings.Fields(line)
+			if len(fields) == 2 {
+				var item Item
+				item.Source = fields[0]
+				item.Target = fields[1]
+				cfg.Dots = append(cfg.Dots, item)
+			}
+		} else {
+			// Read pre dots config.
+			if strings.HasPrefix(line, "[dots]") {
+				inDots = true
+				continue
+			}
+			config := strings.SplitN(line, "=", 2)
+			switch strings.TrimSpace(config[0]) {
+			case "version":
+				version, err := strconv.Atoi(strings.TrimSpace(config[1]))
+				if err == nil {
+					cfg.Version = version
+				}
+			case "dotfiles":
+				cfg.Dotfiles = strings.TrimSpace(config[1])
+			default:
+				fmt.Println("Unknown config directive:", config[0])
+			}
+		}
 	}
 
+	return cfg
+}
+
+func executeDots(cfg Config) {
 	for _, element := range cfg.Dots {
 		handleDot(element, cfg.Dotfiles)
 	}
